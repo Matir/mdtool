@@ -27,7 +27,8 @@ var (
 func main() {
 	var rootCmd = &cobra.Command{
 		Use:   "mdtool [flags] <inpath> [outpath]",
-		Short: "mdtool is a tool for rendering markdown files as HTML",
+		Short: "mdtool renders Markdown files into HTML",
+		Long:  "mdtool is a tool for rendering Markdown files as HTML. It supports CommonMark, GitHub Flavored Markdown (GFM), syntax highlighting, Mermaid diagrams, custom CSS inlining, and YAML front matter handling.",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Legacy/Default Batch mode
@@ -49,7 +50,8 @@ func main() {
 
 	var convertCmd = &cobra.Command{
 		Use:   "convert <inpath> [outpath]",
-		Short: "Batch convert Markdown files to HTML",
+		Short: "Batch convert Markdown files or directories to HTML",
+		Long:  "Convert a single Markdown file or recursively convert a directory of Markdown files into self-contained HTML files.",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := getConverter()
@@ -67,7 +69,8 @@ func main() {
 
 	var serveCmd = &cobra.Command{
 		Use:   "serve [directory]",
-		Short: "Run a local webserver to serve Markdown files as HTML",
+		Short: "Serve Markdown files as HTML via a local web server",
+		Long:  "Run a local web server that dynamically converts and serves Markdown files as HTML on demand, with directory navigation and optional live-reload watching.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
@@ -82,14 +85,14 @@ func main() {
 		},
 	}
 
-	rootCmd.PersistentFlags().StringVar(&cssPath, "css", "", "Path to custom CSS file to inline")
-	rootCmd.PersistentFlags().BoolVar(&noHighlight, "no-highlight", false, "Disable syntax highlighting")
-	rootCmd.PersistentFlags().BoolVar(&noMermaid, "no-mermaid", false, "Disable Mermaid.js diagrams")
-	rootCmd.PersistentFlags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and re-convert or auto-reload")
-	rootCmd.PersistentFlags().StringVar(&frontmatter, "frontmatter", "auto", "Front matter handling: remove, auto, include")
+	rootCmd.PersistentFlags().StringVar(&cssPath, "css", "", "Path to custom CSS file to inline into rendered HTML")
+	rootCmd.PersistentFlags().BoolVar(&noHighlight, "no-highlight", false, "Disable syntax highlighting in code blocks")
+	rootCmd.PersistentFlags().BoolVar(&noMermaid, "no-mermaid", false, "Disable Mermaid.js diagram rendering")
+	rootCmd.PersistentFlags().BoolVarP(&watch, "watch", "w", false, "Watch input for changes and automatically re-convert or auto-reload")
+	rootCmd.PersistentFlags().StringVar(&frontmatter, "frontmatter", "auto", "Front matter handling before conversion: auto (remove if valid YAML), remove (always remove if delimited by ---), include (keep intact)")
 
-	serveCmd.Flags().StringVarP(&listenAddr, "listen", "l", "127.0.0.1:7768", "Listen address for server")
-	serveCmd.Flags().BoolVar(&onlyMD, "only-md", false, "Only serve .md files in server mode")
+	serveCmd.Flags().StringVarP(&listenAddr, "listen", "l", "127.0.0.1:7768", "Listen address and port for web server")
+	serveCmd.Flags().BoolVar(&onlyMD, "only-md", false, "Only serve and display Markdown (.md) files in directory listing")
 
 	rootCmd.AddCommand(convertCmd, serveCmd)
 
