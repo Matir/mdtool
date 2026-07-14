@@ -33,6 +33,10 @@ func TestServerHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := os.WriteFile(filepath.Join(tmpDir, "foo&bar.md"), []byte("# Foo Bar"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	c := converter.New("", false, false)
 	s := New(tmpDir, "", false, c)
 
@@ -83,6 +87,23 @@ func TestServerHandle(t *testing.T) {
 			wantInBody:     "test.md",
 			dontWantInBody: "other.txt",
 		},
+		{
+			name:           "Directory listing escapes HTML in filenames",
+			path:           "/",
+			wantStatus:     http.StatusOK,
+			wantInBody:     "foo&amp;bar.md",
+			dontWantInBody: "foo&bar.md",
+		},
+		{
+			name:       "Path traversal prevention",
+			path:       "/../secret.txt",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "Redirect directory without trailing slash",
+			path:       "/sub",
+			wantStatus: http.StatusFound,
+		},
 	}
 
 	for _, tt := range tests {
@@ -95,6 +116,12 @@ func TestServerHandle(t *testing.T) {
 
 			if status := rr.Code; status != tt.wantStatus {
 				t.Errorf("handler returned wrong status code: got %v want %v", status, tt.wantStatus)
+			}
+
+			if status := rr.Code; status == http.StatusOK {
+				if nosniff := rr.Header().Get("X-Content-Type-Options"); nosniff != "nosniff" {
+					t.Errorf("expected X-Content-Type-Options: nosniff, got %q", nosniff)
+				}
 			}
 
 			if tt.wantInBody != "" {

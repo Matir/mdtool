@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Matir/mdtool/converter"
@@ -27,18 +30,17 @@ var (
 
 func main() {
 	var rootCmd = &cobra.Command{
-		Use:   "mdtool [flags] <inpath> [outpath]",
+		Use:   "mdtool [flags] [inpath] [outpath]",
 		Short: "mdtool renders Markdown files into HTML",
 		Long:  "mdtool is a tool for rendering Markdown files as HTML. It supports CommonMark, GitHub Flavored Markdown (GFM), syntax highlighting, Mermaid diagrams, custom CSS inlining, and YAML front matter handling.",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Legacy/Default Batch mode
-			if len(args) < 1 {
-				return cmd.Help()
-			}
 			c := getConverter()
-			inPath := args[0]
+			var inPath string
 			var outPath string
+			if len(args) > 0 {
+				inPath = args[0]
+			}
 			if len(args) > 1 {
 				outPath = args[1]
 			}
@@ -50,14 +52,17 @@ func main() {
 	}
 
 	var convertCmd = &cobra.Command{
-		Use:   "convert <inpath> [outpath]",
+		Use:   "convert [inpath] [outpath]",
 		Short: "Batch convert Markdown files or directories to HTML",
 		Long:  "Convert a single Markdown file or recursively convert a directory of Markdown files into self-contained HTML files.",
-		Args:  cobra.MinimumNArgs(1),
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := getConverter()
-			inPath := args[0]
+			var inPath string
 			var outPath string
+			if len(args) > 0 {
+				inPath = args[0]
+			}
 			if len(args) > 1 {
 				outPath = args[1]
 			}
@@ -121,6 +126,10 @@ func getConverter() *converter.Converter {
 }
 
 func watchBatch(c *converter.Converter, inPath, outPath string) error {
+	if inPath == "" || inPath == "-" {
+		return fmt.Errorf("watch mode (-w/--watch) is not supported when reading from standard input")
+	}
+
 	// Initial conversion
 	if err := runBatch(c, inPath, outPath); err != nil {
 		log.Printf("Initial conversion error: %v", err)
@@ -155,11 +164,26 @@ func watchBatch(c *converter.Converter, inPath, outPath string) error {
 	var timer *time.Timer
 	const delay = 100 * time.Millisecond
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
 	for {
 		select {
+		case sig := <-sigCh:
+			fmt.Printf("\nReceived signal %v, stopping watch mode...\n", sig)
+			if timer != nil {
+				timer.Stop()
+			}
+			return nil
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
+			}
+			if event.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					watcher.Add(event.Name)
+				}
 			}
 			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 				if strings.HasSuffix(event.Name, ".md") {
@@ -184,6 +208,10 @@ func watchBatch(c *converter.Converter, inPath, outPath string) error {
 }
 
 func runBatch(c *converter.Converter, inPath, outPath string) error {
+	if inPath == "" || inPath == "-" {
+		return convertStdin(c, outPath)
+	}
+
 	info, err := os.Stat(inPath)
 	if err != nil {
 		return err
@@ -193,6 +221,19 @@ func runBatch(c *converter.Converter, inPath, outPath string) error {
 		return convertDir(c, inPath, outPath)
 	}
 	return convertFile(c, inPath, outPath)
+}
+
+func convertStdin(c *converter.Converter, outPath string) error {
+	var out io.Writer = os.Stdout
+	if outPath != "" && outPath != "-" {
+		fOut, err := os.Create(outPath)
+		if err != nil {
+			return err
+		}
+		defer fOut.Close()
+		out = fOut
+	}
+	return c.Convert(os.Stdin, out)
 }
 
 func convertFile(c *converter.Converter, inPath, outPath string) error {
@@ -217,7 +258,8 @@ func convertDir(c *converter.Converter, inPath, outPath string) error {
 
 	return filepath.Walk(inPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			fmt.Fprintf(os.Stderr, "Error accessing %s: %v\n", path, err)
+			return nil
 		}
 		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".md") {
 			return nil
@@ -230,12 +272,16 @@ func convertDir(c *converter.Converter, inPath, outPath string) error {
 		} else {
 			target = filepath.Join(outPath, strings.TrimSuffix(rel, filepath.Ext(rel))+".html")
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return err
+				fmt.Fprintf(os.Stderr, "Error creating output directory for %s: %v\n", target, err)
+				return nil
 			}
 		}
 
 		fmt.Printf("Converting %s -> %s\n", path, target)
-		return doConvert(c, path, target)
+		if err := doConvert(c, path, target); err != nil {
+			fmt.Fprintf(os.Stderr, "Error converting %s: %v\n", path, err)
+		}
+		return nil
 	})
 }
 
@@ -252,5 +298,5 @@ func doConvert(c *converter.Converter, in, out string) error {
 	}
 	defer fOut.Close()
 
-	return c.Convert(fIn, fOut)
+	return c.ConvertWithFilename(fIn, fOut, in)
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
-	"html"
 	"html/template"
 	"io"
 	"os"
@@ -32,6 +31,8 @@ const (
 	AddTitleAuto  = "auto"
 	AddTitleOn    = "on"
 	AddTitleTrue  = "true"
+
+	MaxInputSize = 100 * 1024 * 1024 // 100 MB
 )
 
 //go:embed default.css
@@ -45,6 +46,9 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{- if .Title }}
+    <title>{{ .Title }}</title>
+    {{- end }}
     {{- if .CSS }}
     <style>
     {{ .CSS }}
@@ -89,7 +93,6 @@ type Converter struct {
 	EmbedAssets bool
 	Frontmatter string
 	AddTitle    string
-	Filename    string
 	gm          goldmark.Markdown
 }
 
@@ -130,9 +133,17 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 
 // Convert renders Markdown from r to HTML in w.
 func (c *Converter) Convert(r io.Reader, w io.Writer) error {
-	md, err := io.ReadAll(r)
+	return c.ConvertWithFilename(r, w, "")
+}
+
+// ConvertWithFilename renders Markdown from r to HTML in w, using filename for title generation if needed.
+func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename string) error {
+	md, err := io.ReadAll(io.LimitReader(r, MaxInputSize+1))
 	if err != nil {
 		return err
+	}
+	if int64(len(md)) > MaxInputSize {
+		return fmt.Errorf("input exceeds maximum size of 100MB")
 	}
 
 	fmTitle := extractFrontmatterTitle(md)
@@ -142,10 +153,33 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 		return err
 	}
 
+	reader := text.NewReader(md)
+	doc := c.gm.Parser().Parse(reader)
+
+	var firstHeadingLevel int
+	var firstH1Text string
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering && n.Kind() == ast.KindHeading {
+			heading := n.(*ast.Heading)
+			if firstHeadingLevel == 0 {
+				firstHeadingLevel = heading.Level
+			}
+			if heading.Level == 1 && firstH1Text == "" {
+				firstH1Text = string(heading.Text(md))
+			}
+			if firstHeadingLevel > 0 && firstH1Text != "" {
+				return ast.WalkStop, nil
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+
 	addTitleMode := strings.ToLower(c.AddTitle)
 	if addTitleMode == "" {
 		addTitleMode = AddTitleAuto
 	}
+
+	docTitle := fmTitle
 
 	switch addTitleMode {
 	case AddTitleOff, AddTitleFalse:
@@ -155,18 +189,16 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 		if addTitleMode == AddTitleOn || addTitleMode == AddTitleTrue {
 			shouldAdd = true
 		} else {
-			firstLevel := c.findFirstHeadingLevel(md)
-			shouldAdd = (firstLevel != 1)
+			shouldAdd = (firstHeadingLevel != 1)
 		}
 
 		if shouldAdd {
 			titleString := fmTitle
 			if titleString == "" {
-				var filename string
-				if c.Filename != "" {
-					filename = c.Filename
-				} else if f, ok := r.(*os.File); ok && f.Name() != "" && f.Name() != "/dev/stdin" {
-					filename = f.Name()
+				if filename == "" {
+					if f, ok := r.(*os.File); ok && f.Name() != "" && f.Name() != "/dev/stdin" {
+						filename = f.Name()
+					}
 				}
 
 				if filename != "" {
@@ -179,22 +211,36 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 				}
 			}
 
-			escapedTitle := html.EscapeString(titleString)
+			docTitle = titleString
+
+			escapedTitle := strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace(titleString)
 			md = append([]byte("# "+escapedTitle+"\n\n"), md...)
+			doc = c.gm.Parser().Parse(text.NewReader(md))
 		}
 	default:
 		return fmt.Errorf("invalid addtitle mode: %q", c.AddTitle)
 	}
 
-	// Use a pipe or buffer if we want to be more efficient,
-	// but for template execution we need the rendered content.
-	// For now, let's render to a string and use template.HTML to avoid escaping.
+	if docTitle == "" {
+		if firstH1Text != "" {
+			docTitle = firstH1Text
+		} else if filename != "" {
+			base := filepath.Base(filename)
+			ext := filepath.Ext(base)
+			rawName := strings.TrimSuffix(base, ext)
+			docTitle = toTitleCase(rawName)
+		} else {
+			docTitle = "Untitled"
+		}
+	}
+
 	var content bytes.Buffer
-	if err := c.gm.Convert(md, &content); err != nil {
+	if err := c.gm.Renderer().Render(&content, md, doc); err != nil {
 		return err
 	}
 
 	data := struct {
+		Title       string
 		CSS         template.CSS
 		Content     template.HTML
 		Mermaid     bool
@@ -202,6 +248,7 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 		EmbedAssets bool
 		Watch       bool
 	}{
+		Title:       docTitle,
 		CSS:         template.CSS(c.CSS),
 		Content:     template.HTML(content.String()),
 		Mermaid:     c.Mermaid,
@@ -211,6 +258,57 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 	}
 
 	return pageTemplate.Execute(w, data)
+}
+
+func parseFrontmatterBounds(src []byte) (fmContent []byte, restStart int, secondLineEnd int, found bool) {
+	if len(src) == 0 {
+		return nil, 0, 0, false
+	}
+
+	firstLineEnd := bytes.IndexByte(src, '\n')
+	var firstLine []byte
+	if firstLineEnd == -1 {
+		firstLine = src
+		restStart = len(src)
+	} else {
+		firstLine = src[:firstLineEnd]
+		restStart = firstLineEnd + 1
+	}
+
+	if string(bytes.TrimRight(firstLine, " \t\r")) != "---" {
+		return nil, 0, 0, false
+	}
+
+	curr := restStart
+	secondLineStart := -1
+	secondLineEnd = -1
+
+	for curr < len(src) {
+		lineEnd := bytes.IndexByte(src[curr:], '\n')
+		var line []byte
+		var nextCurr int
+		if lineEnd == -1 {
+			line = src[curr:]
+			nextCurr = len(src)
+		} else {
+			line = src[curr : curr+lineEnd]
+			nextCurr = curr + lineEnd + 1
+		}
+
+		if string(bytes.TrimRight(line, " \t\r")) == "---" {
+			secondLineStart = curr
+			secondLineEnd = nextCurr
+			break
+		}
+
+		curr = nextCurr
+	}
+
+	if secondLineStart == -1 {
+		return nil, 0, 0, false
+	}
+
+	return src[restStart:secondLineStart], restStart, secondLineEnd, true
 }
 
 func processFrontmatter(src []byte, mode string) ([]byte, error) {
@@ -229,66 +327,35 @@ func processFrontmatter(src []byte, mode string) ([]byte, error) {
 		return src, nil
 	}
 
-	// Check if the first line is ---
-	firstLineEnd := bytes.IndexByte(src, '\n')
-	var firstLine []byte
-	var restStart int
-	if firstLineEnd == -1 {
-		firstLine = src
-		restStart = len(src)
-	} else {
-		firstLine = src[:firstLineEnd]
-		restStart = firstLineEnd + 1
-	}
-
-	if string(bytes.TrimRight(firstLine, "\r")) != "---" {
+	fmContent, _, secondLineEnd, ok := parseFrontmatterBounds(src)
+	if !ok {
 		return src, nil
 	}
-
-	// First line is ---, now find the second line with ---
-	curr := restStart
-	secondLineStart := -1
-	secondLineEnd := -1
-
-	for curr < len(src) {
-		lineEnd := bytes.IndexByte(src[curr:], '\n')
-		var line []byte
-		var nextCurr int
-		if lineEnd == -1 {
-			line = src[curr:]
-			nextCurr = len(src)
-		} else {
-			line = src[curr : curr+lineEnd]
-			nextCurr = curr + lineEnd + 1
-		}
-
-		if string(bytes.TrimRight(line, "\r")) == "---" {
-			secondLineStart = curr
-			secondLineEnd = nextCurr
-			break
-		}
-
-		curr = nextCurr
-	}
-
-	if secondLineStart == -1 {
-		// No second line with --- found
-		return src, nil
-	}
-
-	frontmatterContent := src[restStart:secondLineStart]
 
 	if mode == FrontmatterRemove {
 		return src[secondLineEnd:], nil
 	}
 
 	// mode == FrontmatterAuto
-	var node yaml.Node
-	if err := yaml.Unmarshal(frontmatterContent, &node); err == nil {
+	if isYAMLMapping(fmContent) {
 		return src[secondLineEnd:], nil
 	}
 
 	return src, nil
+}
+
+func isYAMLMapping(data []byte) bool {
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return false
+	}
+	if node.Kind == yaml.MappingNode {
+		return true
+	}
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 && node.Content[0].Kind == yaml.MappingNode {
+		return true
+	}
+	return false
 }
 
 func toTitleCase(s string) string {
@@ -306,56 +373,13 @@ func toTitleCase(s string) string {
 }
 
 func extractFrontmatterTitle(src []byte) string {
-	if len(src) == 0 {
+	fmContent, _, _, ok := parseFrontmatterBounds(src)
+	if !ok {
 		return ""
 	}
-
-	firstLineEnd := bytes.IndexByte(src, '\n')
-	var firstLine []byte
-	var restStart int
-	if firstLineEnd == -1 {
-		firstLine = src
-		restStart = len(src)
-	} else {
-		firstLine = src[:firstLineEnd]
-		restStart = firstLineEnd + 1
-	}
-
-	if string(bytes.TrimRight(firstLine, "\r")) != "---" {
-		return ""
-	}
-
-	curr := restStart
-	secondLineStart := -1
-
-	for curr < len(src) {
-		lineEnd := bytes.IndexByte(src[curr:], '\n')
-		var line []byte
-		var nextCurr int
-		if lineEnd == -1 {
-			line = src[curr:]
-			nextCurr = len(src)
-		} else {
-			line = src[curr : curr+lineEnd]
-			nextCurr = curr + lineEnd + 1
-		}
-
-		if string(bytes.TrimRight(line, "\r")) == "---" {
-			secondLineStart = curr
-			break
-		}
-
-		curr = nextCurr
-	}
-
-	if secondLineStart == -1 {
-		return ""
-	}
-
-	frontmatterContent := src[restStart:secondLineStart]
 
 	var node map[string]any
-	if err := yaml.Unmarshal(frontmatterContent, &node); err == nil && node != nil {
+	if err := yaml.Unmarshal(fmContent, &node); err == nil && node != nil {
 		if val, ok := node["title"]; ok && val != nil {
 			titleStr := fmt.Sprintf("%v", val)
 			return strings.TrimSpace(titleStr)
@@ -363,19 +387,4 @@ func extractFrontmatterTitle(src []byte) string {
 	}
 
 	return ""
-}
-
-func (c *Converter) findFirstHeadingLevel(md []byte) int {
-	reader := text.NewReader(md)
-	doc := c.gm.Parser().Parse(reader)
-	firstLevel := 0
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if entering && n.Kind() == ast.KindHeading {
-			heading := n.(*ast.Heading)
-			firstLevel = heading.Level
-			return ast.WalkStop, nil
-		}
-		return ast.WalkContinue, nil
-	})
-	return firstLevel
 }

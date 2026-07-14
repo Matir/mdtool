@@ -143,6 +143,18 @@ func TestProcessFrontmatter(t *testing.T) {
 			expected: validYAML,
 		},
 		{
+			name:     "auto with scalar text inside delimiters",
+			mode:     FrontmatterAuto,
+			input:    "---\nJust plain text\n---\n# Body",
+			expected: "---\nJust plain text\n---\n# Body",
+		},
+		{
+			name:     "auto with array inside delimiters",
+			mode:     FrontmatterAuto,
+			input:    "---\n- item 1\n- item 2\n---\n# Body",
+			expected: "---\n- item 1\n- item 2\n---\n# Body",
+		},
+		{
 			name:    "invalid frontmatter mode",
 			mode:    "invalid",
 			input:   validYAML,
@@ -246,10 +258,9 @@ func TestAddTitle(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := New("", false, false)
 			c.AddTitle = tt.addTitleMode
-			c.Filename = tt.filename
 
 			var buf bytes.Buffer
-			err := c.Convert(strings.NewReader(tt.input), &buf)
+			err := c.ConvertWithFilename(strings.NewReader(tt.input), &buf, tt.filename)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Convert() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -262,5 +273,92 @@ func TestAddTitle(t *testing.T) {
 				t.Errorf("Expected output to NOT contain %q, got:\n%s", tt.dontWant, output)
 			}
 		})
+	}
+}
+
+func TestFrontmatterTrailingSpaces(t *testing.T) {
+	inputWithTrailingSpaces := "--- \t\r\ntitle: Space Delimiter\n---  \r\n# Body"
+	got, err := processFrontmatter([]byte(inputWithTrailingSpaces), FrontmatterAuto)
+	if err != nil {
+		t.Fatalf("processFrontmatter error: %v", err)
+	}
+	if strings.Contains(string(got), "title: Space Delimiter") {
+		t.Errorf("Expected frontmatter with trailing spaces on delimiter to be removed, got:\n%s", string(got))
+	}
+
+	invalidLeadingSpaces := "  ---\ntitle: Invalid Delimiter\n---\n# Body"
+	gotLeading, err := processFrontmatter([]byte(invalidLeadingSpaces), FrontmatterAuto)
+	if err != nil {
+		t.Fatalf("processFrontmatter error: %v", err)
+	}
+	if !strings.Contains(string(gotLeading), "title: Invalid Delimiter") {
+		t.Errorf("Expected frontmatter with leading spaces on delimiter to NOT be removed, got:\n%s", string(gotLeading))
+	}
+}
+
+func TestAddTitleEscapingAmpersand(t *testing.T) {
+	c := New("", false, false)
+	c.AddTitle = AddTitleAuto
+	input := "---\ntitle: \"Fish & Chips & <script>alert(1)</script>\"\n---\n\nBody content"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "&amp;amp;") {
+		t.Errorf("Title ampersand was double-escaped: %s", output)
+	}
+	if !strings.Contains(output, "Fish &amp; Chips") {
+		t.Errorf("Expected 'Fish &amp; Chips' in title output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "&lt;script&gt;") {
+		t.Errorf("Expected script tag to be escaped to &lt;script&gt;, got:\n%s", output)
+	}
+}
+
+type oversizedReader struct {
+	remaining int64
+}
+
+func (r *oversizedReader) Read(p []byte) (n int, err error) {
+	if r.remaining <= 0 {
+		return 0, nil
+	}
+	toRead := int64(len(p))
+	if toRead > r.remaining {
+		toRead = r.remaining
+	}
+	for i := int64(0); i < toRead; i++ {
+		p[i] = 'a'
+	}
+	r.remaining -= toRead
+	return int(toRead), nil
+}
+
+func TestConvertExceedsMaxInputSize(t *testing.T) {
+	c := New("", false, false)
+	r := &oversizedReader{remaining: MaxInputSize + 1024}
+	var buf bytes.Buffer
+	err := c.Convert(r, &buf)
+	if err == nil {
+		t.Fatal("Expected error for oversized input, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size of 100MB") {
+		t.Errorf("Expected size limit error message, got: %v", err)
+	}
+}
+
+func TestHTMLDocumentTitleTag(t *testing.T) {
+	c := New("", false, false)
+	input := "---\ntitle: Document Title Test\n---\n# Heading"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "<title>Document Title Test</title>") {
+		t.Errorf("Expected <title>Document Title Test</title> in head, got:\n%s", output)
 	}
 }

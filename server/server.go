@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,45 @@ import (
 	"github.com/Matir/mdtool/converter"
 	"github.com/fsnotify/fsnotify"
 )
+
+var dirListingTemplate = template.Must(template.New("dirListing").Parse(`<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: sans-serif; padding: 2em; line-height: 1.5; max-width: 800px; margin: auto; }
+        ul { list-style: none; padding: 0; }
+        li { border-bottom: 1px solid #eee; padding: 0.5em 0; }
+        a { text-decoration: none; color: #0366d6; }
+        a:hover { text-decoration: underline; }
+        .dir { font-weight: bold; }
+    </style>
+</head>
+<body>
+<h1>Index of {{ .URLPath }}</h1>
+<ul>
+    {{- if .ShowParent }}
+    <li><a href="..">..</a></li>
+    {{- end }}
+    {{- range .Items }}
+    <li><a href="{{ .Href }}"{{ if .IsDir }} class="dir"{{ end }}>{{ .Name }}</a></li>
+    {{- end }}
+</ul>
+</body>
+</html>`))
+
+type dirListingItem struct {
+	Name  string
+	Href  string
+	IsDir bool
+}
+
+type dirListingData struct {
+	URLPath    string
+	ShowParent bool
+	Items      []dirListingItem
+}
 
 // Server holds the configuration for the web server.
 type Server struct {
@@ -49,14 +91,16 @@ func (s *Server) Serve() error {
 	}
 
 	s.Converter.EmbedAssets = false
-	http.HandleFunc("/_mdtool/mermaid.min.js", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/_mdtool/mermaid.min.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		fmt.Fprint(w, converter.MermaidJS)
 	})
-	http.HandleFunc("/events", s.handleEvents)
-	http.HandleFunc("/", s.handle)
+	mux.HandleFunc("/events", s.handleEvents)
+	mux.HandleFunc("/", s.handle)
 	fmt.Printf("Starting server on %s serving %s\n", s.Listen, s.Dir)
-	return http.ListenAndServe(s.Listen, nil)
+	return http.ListenAndServe(s.Listen, mux)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +173,12 @@ func (s *Server) watchFiles() {
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if event.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+					watcher.Add(event.Name)
+				}
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 				if strings.HasSuffix(event.Name, ".md") {
 					if timer != nil {
 						timer.Stop()
@@ -150,7 +199,20 @@ func (s *Server) watchFiles() {
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	relPath := strings.TrimPrefix(r.URL.Path, "/")
-	fullPath := filepath.Join(s.Dir, relPath)
+
+	baseDir, err := filepath.Abs(s.Dir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	fullPath := filepath.Clean(filepath.Join(baseDir, relPath))
+
+	rel, err := filepath.Rel(baseDir, fullPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		http.NotFound(w, r)
+		return
+	}
 
 	info, err := os.Stat(fullPath)
 	if err != nil {
@@ -163,6 +225,11 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if info.IsDir() {
+		if !strings.HasSuffix(r.URL.Path, "/") {
+			http.Redirect(w, r, r.URL.Path+"/", http.StatusFound)
+			return
+		}
+
 		// Look for index.md or README.md
 		for _, name := range []string{"index.md", "README.md"} {
 			indexPath := filepath.Join(fullPath, name)
@@ -187,6 +254,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Serve other files directly
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, fullPath)
 }
 
@@ -198,12 +266,16 @@ func (s *Server) serveMarkdown(w http.ResponseWriter, path string) {
 	}
 	defer f.Close()
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.Converter.Convert(f, w); err != nil {
-		// If we already started writing, this might not work perfectly,
-		// but Convert writes its own headers/start tags anyway.
-		fmt.Fprintf(os.Stderr, "Conversion error: %v\n", err)
+	var buf bytes.Buffer
+	if err := s.Converter.ConvertWithFilename(f, &buf, path); err != nil {
+		http.Error(w, fmt.Sprintf("Conversion error: %v", err), http.StatusInternalServerError)
+		return
 	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Write(buf.Bytes())
 }
 
 func (s *Server) serveDirectoryListing(w http.ResponseWriter, fullPath, urlPath string) {
@@ -213,36 +285,31 @@ func (s *Server) serveDirectoryListing(w http.ResponseWriter, fullPath, urlPath 
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<html>
-<head>
-    <style>
-        body { font-family: sans-serif; padding: 2em; line-height: 1.5; max-width: 800px; margin: auto; }
-        ul { list-style: none; padding: 0; }
-        li { border-bottom: 1px solid #eee; padding: 0.5em 0; }
-        a { text-decoration: none; color: #0366d6; }
-        a:hover { text-decoration: underline; }
-        .dir { font-weight: bold; }
-    </style>
-</head>
-<body>
-<h1>Index of %s</h1>
-<ul>`, urlPath)
-
-	if urlPath != "/" {
-		fmt.Fprintf(w, "<li><a href=\"..\">..</a></li>")
-	}
-
+	var items []dirListingItem
 	for _, entry := range entries {
 		name := entry.Name()
-		class := ""
-		if entry.IsDir() {
+		isDir := entry.IsDir()
+		if isDir {
 			name += "/"
-			class = "class=\"dir\""
 		} else if s.OnlyMD && !strings.HasSuffix(strings.ToLower(name), ".md") {
 			continue
 		}
-		fmt.Fprintf(w, "<li><a href=\"%s\" %s>%s</a></li>", name, class, name)
+		items = append(items, dirListingItem{
+			Name:  name,
+			Href:  name,
+			IsDir: isDir,
+		})
 	}
-	fmt.Fprintf(w, "</ul></body></html>")
+
+	data := dirListingData{
+		URLPath:    urlPath,
+		ShowParent: urlPath != "/",
+		Items:      items,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if err := dirListingTemplate.Execute(w, data); err != nil {
+		fmt.Fprintf(os.Stderr, "Template execution error: %v\n", err)
+	}
 }
