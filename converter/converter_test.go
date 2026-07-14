@@ -80,3 +80,85 @@ func TestConvertCustomCSS(t *testing.T) {
 		t.Errorf("Expected custom CSS in output, got %s", output)
 	}
 }
+
+func TestProcessFrontmatter(t *testing.T) {
+	validYAML := "---\ntitle: Test Document\nauthor: Alice\n---\n# Title\nBody content"
+	invalidYAML := "---\ntitle: : invalid yaml syntax {\n---\n# Title\nBody content"
+	noSecondDelimiter := "---\ntitle: Test Document\n# Title\nBody content"
+	noFirstDelimiter := "# Title\n---\ntitle: Test Document\n---\nBody content"
+
+	tests := []struct {
+		name     string
+		mode     string
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{
+			name:     "auto with valid YAML",
+			mode:     FrontmatterAuto,
+			input:    validYAML,
+			expected: "# Title\nBody content",
+		},
+		{
+			name:     "auto with invalid YAML",
+			mode:     FrontmatterAuto,
+			input:    invalidYAML,
+			expected: invalidYAML,
+		},
+		{
+			name:     "auto with no second delimiter",
+			mode:     FrontmatterAuto,
+			input:    noSecondDelimiter,
+			expected: noSecondDelimiter,
+		},
+		{
+			name:     "auto with no first delimiter",
+			mode:     FrontmatterAuto,
+			input:    noFirstDelimiter,
+			expected: noFirstDelimiter,
+		},
+		{
+			name:     "remove with valid YAML",
+			mode:     FrontmatterRemove,
+			input:    validYAML,
+			expected: "# Title\nBody content",
+		},
+		{
+			name:     "remove with invalid YAML",
+			mode:     FrontmatterRemove,
+			input:    invalidYAML,
+			expected: "# Title\nBody content",
+		},
+		{
+			name:     "remove with no second delimiter",
+			mode:     FrontmatterRemove,
+			input:    noSecondDelimiter,
+			expected: noSecondDelimiter,
+		},
+		{
+			name:     "include with valid YAML",
+			mode:     FrontmatterInclude,
+			input:    validYAML,
+			expected: validYAML,
+		},
+		{
+			name:    "invalid frontmatter mode",
+			mode:    "invalid",
+			input:   validYAML,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := processFrontmatter([]byte(tt.input), tt.mode)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("processFrontmatter() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && string(got) != tt.expected {
+				t.Errorf("processFrontmatter() = %q, want %q", string(got), tt.expected)
+			}
+		})
+	}
+}

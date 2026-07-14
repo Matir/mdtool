@@ -21,6 +21,7 @@ var (
 	listenAddr  string
 	onlyMD      bool
 	watch       bool
+	frontmatter string
 )
 
 func main() {
@@ -85,6 +86,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&noHighlight, "no-highlight", false, "Disable syntax highlighting")
 	rootCmd.PersistentFlags().BoolVar(&noMermaid, "no-mermaid", false, "Disable Mermaid.js diagrams")
 	rootCmd.PersistentFlags().BoolVarP(&watch, "watch", "w", false, "Watch for changes and re-convert or auto-reload")
+	rootCmd.PersistentFlags().StringVar(&frontmatter, "frontmatter", "auto", "Front matter handling: remove, auto, include")
 
 	serveCmd.Flags().StringVarP(&listenAddr, "listen", "l", "127.0.0.1:7768", "Listen address for server")
 	serveCmd.Flags().BoolVar(&onlyMD, "only-md", false, "Only serve .md files in server mode")
@@ -108,6 +110,7 @@ func getConverter() *converter.Converter {
 	}
 	c := converter.New(css, !noHighlight, !noMermaid)
 	c.Watch = watch
+	c.Frontmatter = frontmatter
 	return c
 }
 
