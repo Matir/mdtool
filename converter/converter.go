@@ -4,14 +4,21 @@ import (
 	"bytes"
 	_ "embed"
 	"fmt"
+	"html"
 	"html/template"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark-highlighting/v2"
+	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/renderer/html"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,6 +26,12 @@ const (
 	FrontmatterAuto    = "auto"
 	FrontmatterRemove  = "remove"
 	FrontmatterInclude = "include"
+
+	AddTitleOff   = "off"
+	AddTitleFalse = "false"
+	AddTitleAuto  = "auto"
+	AddTitleOn    = "on"
+	AddTitleTrue  = "true"
 )
 
 //go:embed default.css
@@ -75,6 +88,8 @@ type Converter struct {
 	Watch       bool
 	EmbedAssets bool
 	Frontmatter string
+	AddTitle    string
+	Filename    string
 	gm          goldmark.Markdown
 }
 
@@ -98,7 +113,7 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 			parser.WithAutoHeadingID(),
 		),
 		goldmark.WithRendererOptions(
-			html.WithUnsafe(),
+			gmhtml.WithUnsafe(),
 		),
 	)
 
@@ -108,6 +123,7 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 		Mermaid:     mermaid,
 		EmbedAssets: true, // Default to true for batch mode
 		Frontmatter: FrontmatterAuto,
+		AddTitle:    AddTitleAuto,
 		gm:          gm,
 	}
 }
@@ -119,9 +135,55 @@ func (c *Converter) Convert(r io.Reader, w io.Writer) error {
 		return err
 	}
 
+	fmTitle := extractFrontmatterTitle(md)
+
 	md, err = processFrontmatter(md, c.Frontmatter)
 	if err != nil {
 		return err
+	}
+
+	addTitleMode := strings.ToLower(c.AddTitle)
+	if addTitleMode == "" {
+		addTitleMode = AddTitleAuto
+	}
+
+	switch addTitleMode {
+	case AddTitleOff, AddTitleFalse:
+		// do nothing
+	case AddTitleOn, AddTitleTrue, AddTitleAuto:
+		shouldAdd := false
+		if addTitleMode == AddTitleOn || addTitleMode == AddTitleTrue {
+			shouldAdd = true
+		} else {
+			firstLevel := c.findFirstHeadingLevel(md)
+			shouldAdd = (firstLevel != 1)
+		}
+
+		if shouldAdd {
+			titleString := fmTitle
+			if titleString == "" {
+				var filename string
+				if c.Filename != "" {
+					filename = c.Filename
+				} else if f, ok := r.(*os.File); ok && f.Name() != "" && f.Name() != "/dev/stdin" {
+					filename = f.Name()
+				}
+
+				if filename != "" {
+					base := filepath.Base(filename)
+					ext := filepath.Ext(base)
+					rawName := strings.TrimSuffix(base, ext)
+					titleString = toTitleCase(rawName)
+				} else {
+					titleString = "Untitled"
+				}
+			}
+
+			escapedTitle := html.EscapeString(titleString)
+			md = append([]byte("# "+escapedTitle+"\n\n"), md...)
+		}
+	default:
+		return fmt.Errorf("invalid addtitle mode: %q", c.AddTitle)
 	}
 
 	// Use a pipe or buffer if we want to be more efficient,
@@ -227,4 +289,93 @@ func processFrontmatter(src []byte, mode string) ([]byte, error) {
 	}
 
 	return src, nil
+}
+
+func toTitleCase(s string) string {
+	s = strings.ReplaceAll(s, "-", " ")
+	s = strings.ReplaceAll(s, "_", " ")
+	words := strings.Fields(s)
+	for i, w := range words {
+		r := []rune(w)
+		if len(r) > 0 {
+			r[0] = unicode.ToUpper(r[0])
+			words[i] = string(r)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func extractFrontmatterTitle(src []byte) string {
+	if len(src) == 0 {
+		return ""
+	}
+
+	firstLineEnd := bytes.IndexByte(src, '\n')
+	var firstLine []byte
+	var restStart int
+	if firstLineEnd == -1 {
+		firstLine = src
+		restStart = len(src)
+	} else {
+		firstLine = src[:firstLineEnd]
+		restStart = firstLineEnd + 1
+	}
+
+	if string(bytes.TrimRight(firstLine, "\r")) != "---" {
+		return ""
+	}
+
+	curr := restStart
+	secondLineStart := -1
+
+	for curr < len(src) {
+		lineEnd := bytes.IndexByte(src[curr:], '\n')
+		var line []byte
+		var nextCurr int
+		if lineEnd == -1 {
+			line = src[curr:]
+			nextCurr = len(src)
+		} else {
+			line = src[curr : curr+lineEnd]
+			nextCurr = curr + lineEnd + 1
+		}
+
+		if string(bytes.TrimRight(line, "\r")) == "---" {
+			secondLineStart = curr
+			break
+		}
+
+		curr = nextCurr
+	}
+
+	if secondLineStart == -1 {
+		return ""
+	}
+
+	frontmatterContent := src[restStart:secondLineStart]
+
+	var node map[string]any
+	if err := yaml.Unmarshal(frontmatterContent, &node); err == nil && node != nil {
+		if val, ok := node["title"]; ok && val != nil {
+			titleStr := fmt.Sprintf("%v", val)
+			return strings.TrimSpace(titleStr)
+		}
+	}
+
+	return ""
+}
+
+func (c *Converter) findFirstHeadingLevel(md []byte) int {
+	reader := text.NewReader(md)
+	doc := c.gm.Parser().Parse(reader)
+	firstLevel := 0
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering && n.Kind() == ast.KindHeading {
+			heading := n.(*ast.Heading)
+			firstLevel = heading.Level
+			return ast.WalkStop, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	return firstLevel
 }

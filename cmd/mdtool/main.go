@@ -22,6 +22,7 @@ var (
 	onlyMD      bool
 	watch       bool
 	frontmatter string
+	addTitle    string
 )
 
 func main() {
@@ -90,6 +91,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&noMermaid, "no-mermaid", false, "Disable Mermaid.js diagram rendering")
 	rootCmd.PersistentFlags().BoolVarP(&watch, "watch", "w", false, "Watch input for changes and automatically re-convert or auto-reload")
 	rootCmd.PersistentFlags().StringVar(&frontmatter, "frontmatter", "auto", "Front matter handling before conversion: auto (remove if valid YAML), remove (always remove if delimited by ---), include (keep intact)")
+	rootCmd.PersistentFlags().StringVar(&addTitle, "addtitle", "auto", "Title insertion mode: auto (add h1 if missing), on/true (always add h1), off/false (never add h1)")
 
 	serveCmd.Flags().StringVarP(&listenAddr, "listen", "l", "127.0.0.1:7768", "Listen address and port for web server")
 	serveCmd.Flags().BoolVar(&onlyMD, "only-md", false, "Only serve and display Markdown (.md) files in directory listing")
@@ -114,6 +116,7 @@ func getConverter() *converter.Converter {
 	c := converter.New(css, !noHighlight, !noMermaid)
 	c.Watch = watch
 	c.Frontmatter = frontmatter
+	c.AddTitle = addTitle
 	return c
 }
 
