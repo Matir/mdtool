@@ -68,7 +68,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
         <script src="/_mdtool/mermaid.min.js"></script>
         {{- end }}
         <script type="module">
-        mermaid.initialize({ startOnLoad: true });
+        mermaid.initialize({ startOnLoad: true, theme: 'dark' });
         </script>
     {{- end }}
     {{- if .Watch }}
@@ -107,7 +107,13 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 	}
 
 	if highlight {
-		extensions = append(extensions, highlighting.NewHighlighting())
+		extensions = append(extensions, highlighting.NewHighlighting(
+			highlighting.WithStyle("dracula"),
+		))
+	}
+
+	if mermaid {
+		extensions = append(extensions, &mermaidExtender{})
 	}
 
 	gm := goldmark.New(

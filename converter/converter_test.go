@@ -53,8 +53,8 @@ func TestConvertHighlight(t *testing.T) {
 }
 
 func TestConvertMermaid(t *testing.T) {
-	c := New("", false, true)
-	input := "graph TD; A-->B;"
+	c := New("", true, true)
+	input := "```mermaid\ngraph TD;\n    A-->B;\n    B-->C[Value < 10 & > 0];\n```\n\n```go\nfunc main() {}\n```"
 	var buf bytes.Buffer
 	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
 		t.Fatalf("Convert failed: %v", err)
@@ -63,6 +63,50 @@ func TestConvertMermaid(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "mermaid.initialize") {
 		t.Errorf("Expected mermaid script in output, got %s", output)
+	}
+	if !strings.Contains(output, "<pre class=\"mermaid\">graph TD;\n    A--&gt;B;\n    B--&gt;C[Value &lt; 10 &amp; &gt; 0];\n</pre>") {
+		t.Errorf("Expected <pre class=\"mermaid\"> block with escaped content in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "language-mermaid") {
+		t.Errorf("Did not expect language-mermaid code block when mermaid is enabled, got:\n%s", output)
+	}
+	// Verify syntax highlighting still works for other languages
+	if !strings.Contains(output, "color:") && !strings.Contains(output, "style=") {
+		t.Errorf("Expected syntax highlighting for Go block in output, got:\n%s", output)
+	}
+}
+
+func TestConvertMermaidDisabled(t *testing.T) {
+	c := New("", false, false)
+	input := "```mermaid\ngraph TD;\n    A-->B;\n```"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "mermaid.initialize") {
+		t.Errorf("Did not expect mermaid script when mermaid is disabled")
+	}
+	if strings.Contains(output, "<pre class=\"mermaid\">") {
+		t.Errorf("Did not expect <pre class=\"mermaid\"> when mermaid is disabled")
+	}
+	if !strings.Contains(output, "<pre><code class=\"language-mermaid\">") {
+		t.Errorf("Expected standard code block <pre><code class=\"language-mermaid\"> when mermaid is disabled, got:\n%s", output)
+	}
+}
+
+func TestConvertMermaidCaseInsensitive(t *testing.T) {
+	c := New("", false, true)
+	input := "```Mermaid\ngraph LR;\n    X-->Y;\n```"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "<pre class=\"mermaid\">graph LR;\n    X--&gt;Y;\n</pre>") {
+		t.Errorf("Expected <pre class=\"mermaid\"> for case-insensitive Mermaid fence, got:\n%s", output)
 	}
 }
 

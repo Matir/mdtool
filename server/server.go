@@ -23,11 +23,14 @@ var dirListingTemplate = template.Must(template.New("dirListing").Parse(`<!DOCTY
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: sans-serif; padding: 2em; line-height: 1.5; max-width: 800px; margin: auto; }
+        :root { color-scheme: dark; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; padding: 2em; line-height: 1.6; max-width: 860px; margin: auto; background-color: #0d1117; color: #e6edf3; }
+        h1 { color: #f0f6fc; border-bottom: 1px solid #21262d; padding-bottom: 0.3em; }
         ul { list-style: none; padding: 0; }
-        li { border-bottom: 1px solid #eee; padding: 0.5em 0; }
-        a { text-decoration: none; color: #0366d6; }
-        a:hover { text-decoration: underline; }
+        li { border-bottom: 1px solid #21262d; padding: 0.5em 0; }
+        a { text-decoration: none; color: #58a6ff; }
+        a:visited { color: #a371f7; }
+        a:hover { color: #79c0ff; text-decoration: underline; }
         .dir { font-weight: bold; }
     </style>
 </head>
