@@ -4,6 +4,7 @@ go 1.24.13
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/litao91/goldmark-mathjax v0.0.0-20210217064022-a43cf739a50f
 	github.com/spf13/cobra v1.10.2
 	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc

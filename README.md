@@ -28,6 +28,7 @@ mdtool convert [flags] <inpath> [outpath]
 - `--css <path>`: Path to a custom CSS file to inline in the output.
 - `--no-highlight`: Disable syntax highlighting.
 - `--no-mermaid`: Disable Mermaid.js diagrams.
+- `--no-mathjax`: Disable MathJax mathematical expressions.
 
 ### Server Mode
 
@@ -43,12 +44,13 @@ By default, it serves the current directory and binds to `127.0.0.1:7768`.
 - `-w, --watch`: Enable live auto-reload in the browser when files change.
 - `-l, --listen <addr>`: Change the listen address (default `127.0.0.1:7768`).
 - `--only-md`: Only serve `.md` files; hide or deny access to other file types.
-- `--css <path>`, `--no-highlight`, `--no-mermaid`: Same as conversion mode.
+- `--css <path>`, `--no-highlight`, `--no-mermaid`, `--no-mathjax`: Same as conversion mode.
 
 ## Supported Markdown Features
 
 - **Syntax Highlighting**: Fenced code blocks are highlighted via Chroma.
 - **Diagrams**: Mermaid.js support for `mermaid` code blocks.
+- **Mathematics**: MathJax support for inline (`$...$`) and display (`$$...$$`) equations.
 - **GFM**: GitHub-Flavored Markdown (Checklists, Tables, etc.).
 - **Dark Mode**: Automatically respects system preferences via media queries.
 - **Live Reload**: Browser automatically refreshes when files are saved (requires `-w` in server mode).

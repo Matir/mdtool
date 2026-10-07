@@ -406,3 +406,227 @@ func TestHTMLDocumentTitleTag(t *testing.T) {
 		t.Errorf("Expected <title>Document Title Test</title> in head, got:\n%s", output)
 	}
 }
+
+func TestConvertMathJaxInline(t *testing.T) {
+	c := New("", false, false)
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "basic inline math",
+			input: "Inline math $1+2$ here.",
+			want:  `<p>Inline math <span class="math inline">\(1+2\)</span> here.</p>`,
+		},
+		{
+			name:  "latex fraction and subscripts",
+			input: `Equation $\frac{a_1}{b_2}$ with subscripts.`,
+			want:  `<p>Equation <span class="math inline">\(\frac{a_1}{b_2}\)</span> with subscripts.</p>`,
+		},
+		{
+			name:  "neighboring inline math",
+			input: "$a$+$b$ and $c$, $d$",
+			want:  `<p><span class="math inline">\(a\)</span>+<span class="math inline">\(b\)</span> and <span class="math inline">\(c\)</span>, <span class="math inline">\(d\)</span></p>`,
+		},
+		{
+			name:  "parenthesized inline math",
+			input: "See ($x + y$) for details.",
+			want:  `<p>See (<span class="math inline">\(x + y\)</span>) for details.</p>`,
+		},
+		{
+			name:  "escaped dollar inside inline math",
+			input: `Formula $x = \$5$ with literal dollar.`,
+			want:  `<p>Formula <span class="math inline">\(x = \$5\)</span> with literal dollar.</p>`,
+		},
+		{
+			name:  "html special characters in inline math",
+			input: "$a < b & c > d$",
+			want:  `<p><span class="math inline">\(a &lt; b &amp; c &gt; d\)</span></p>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := c.Convert(strings.NewReader(tt.input), &buf); err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+			output := buf.String()
+			if !strings.Contains(output, tt.want) {
+				t.Errorf("Expected %q in output, got:\n%s", tt.want, output)
+			}
+			if !strings.Contains(output, "window.MathJax") {
+				t.Errorf("Expected window.MathJax configuration in output")
+			}
+		})
+	}
+}
+
+func TestConvertMathJaxBlock(t *testing.T) {
+	c := New("", false, false)
+	input := "$$\n\\mathbb{E}(X) = \\int x dF(x)\n$$\n$$\na < b & c > d\n$$\n\n$$ E = mc^2 $$\n\n```text\n$not_math$\n$$not_block$$\n```\n\n`$also_not_math$`\n"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	wantBlocks := []string{
+		"<p><span class=\"math display\">\\[\\mathbb{E}(X) = \\int x dF(x)\n\\]</span></p>",
+		"<p><span class=\"math display\">\\[a &lt; b &amp; c &gt; d\n\\]</span></p>",
+		"<p><span class=\"math display\">\\[ E = mc^2 \\]</span></p>",
+		"<code>$also_not_math$</code>",
+	}
+	for _, want := range wantBlocks {
+		if !strings.Contains(output, want) {
+			t.Errorf("Expected %q in output, got:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, `\(not_math\)`) || strings.Contains(output, `\(also_not_math\)`) {
+		t.Errorf("Code block or code span was unexpectedly parsed as math:\n%s", output)
+	}
+}
+
+func TestConvertMathJaxCurrency(t *testing.T) {
+	c := New("", false, false)
+	tests := []struct {
+		name           string
+		input          string
+		wantInBody     string
+		dontWantInBody string
+	}{
+		{
+			name:           "single currency symbol",
+			input:          "The item costs $5.",
+			wantInBody:     "<p>The item costs $5.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "two currency amounts in one sentence",
+			input:          "It costs $5 and $10.",
+			wantInBody:     "<p>It costs $5 and $10.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "currency amounts with commas and decimals",
+			input:          "The total is $20,000.50 and $30,000.75.",
+			wantInBody:     "<p>The total is $20,000.50 and $30,000.75.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "currency price ranges",
+			input:          "Prices range from $5-$10 or $5/$10 or $5-$.50.",
+			wantInBody:     "<p>Prices range from $5-$10 or $5/$10 or $5-$.50.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "parenthesized currency amounts",
+			input:          "Tickets are ($5) or ($10), or $5 ($10 with tax).",
+			wantInBody:     "<p>Tickets are ($5) or ($10), or $5 ($10 with tax).</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "currency followed by parenthesized math",
+			input:          "It costs $5 ($x$ with tax).",
+			wantInBody:     `<p>It costs $5 (<span class="math inline">\(x\)</span> with tax).</p>`,
+			dontWantInBody: `\(5`,
+		},
+		{
+			name:           "currency interleaved with inline math",
+			input:          "Cost is $5 for $a$ and $10 for $b$.",
+			wantInBody:     `<p>Cost is $5 for <span class="math inline">\(a\)</span> and $10 for <span class="math inline">\(b\)</span>.</p>`,
+			dontWantInBody: `\(5`,
+		},
+		{
+			name:           "currency on line before math at start of next line",
+			input:          "The price is $50 and the formula is\n$x + y$.",
+			wantInBody:     "<p>The price is $50 and the formula is\n<span class=\"math inline\">\\(x + y\\)</span>.</p>",
+			dontWantInBody: `\(50`,
+		},
+		{
+			name:           "spaces immediately inside single dollar delimiters",
+			input:          "This $ 5 + 5 $ has spaces.",
+			wantInBody:     "<p>This $ 5 + 5 $ has spaces.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "trailing currency symbols after digits",
+			input:          "In some places it is 100$ and 200$.",
+			wantInBody:     "<p>In some places it is 100$ and 200$.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "word-internal dollar signs",
+			input:          "Identifier foo$bar$baz is not math.",
+			wantInBody:     "<p>Identifier foo$bar$baz is not math.</p>",
+			dontWantInBody: `class="math`,
+		},
+		{
+			name:           "escaped dollar signs",
+			input:          `Escaped \$5 and \$10 are literal.`,
+			wantInBody:     "<p>Escaped $5 and $10 are literal.</p>",
+			dontWantInBody: `class="math`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := c.Convert(strings.NewReader(tt.input), &buf); err != nil {
+				t.Fatalf("Convert failed: %v", err)
+			}
+			// Extract markdown-body to avoid matching anything inside embedded JS
+			output := buf.String()
+			bodyStart := strings.Index(output, `<div class="markdown-body">`)
+			bodyEnd := strings.Index(output, `</div>`)
+			if bodyStart == -1 || bodyEnd == -1 || bodyEnd < bodyStart {
+				t.Fatalf("Could not locate markdown-body in output")
+			}
+			body := output[bodyStart:bodyEnd]
+
+			if !strings.Contains(body, tt.wantInBody) {
+				t.Errorf("Expected body to contain %q, got:\n%s", tt.wantInBody, body)
+			}
+			if tt.dontWantInBody != "" && strings.Contains(body, tt.dontWantInBody) {
+				t.Errorf("Expected body to NOT contain %q, got:\n%s", tt.dontWantInBody, body)
+			}
+		})
+	}
+}
+
+func TestConvertMathJaxDisabled(t *testing.T) {
+	c := New("", false, false)
+	c.MathJax = false
+	input := "Inline $1+2$ and block:\n\n$$\n1+2\n$$"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "window.MathJax") || strings.Contains(output, "mathjax.min.js") {
+		t.Errorf("Did not expect MathJax script when MathJax is disabled")
+	}
+	if strings.Contains(output, `class="math`) {
+		t.Errorf("Did not expect math spans when MathJax is disabled, got:\n%s", output)
+	}
+	if !strings.Contains(output, "<p>Inline $1+2$ and block:</p>") {
+		t.Errorf("Expected literal $1+2$ when MathJax is disabled, got:\n%s", output)
+	}
+}
+
+func TestConvertMathJaxServerModeScript(t *testing.T) {
+	c := New("", false, false)
+	c.EmbedAssets = false
+	input := "$x^2$"
+	var buf bytes.Buffer
+	if err := c.Convert(strings.NewReader(input), &buf); err != nil {
+		t.Fatalf("Convert failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, `<script src="/_mdtool/mathjax.min.js"></script>`) {
+		t.Errorf("Expected external mathjax script tag when EmbedAssets is false, got:\n%s", output)
+	}
+}

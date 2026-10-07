@@ -21,6 +21,7 @@ var (
 	cssPath     string
 	noHighlight bool
 	noMermaid   bool
+	noMathJax   bool
 	listenAddr  string
 	onlyMD      bool
 	watch       bool
@@ -32,7 +33,7 @@ func main() {
 	var rootCmd = &cobra.Command{
 		Use:   "mdtool [flags] [inpath] [outpath]",
 		Short: "mdtool renders Markdown files into HTML",
-		Long:  "mdtool is a tool for rendering Markdown files as HTML. It supports CommonMark, GitHub Flavored Markdown (GFM), syntax highlighting, Mermaid diagrams, custom CSS inlining, and YAML front matter handling.",
+		Long:  "mdtool is a tool for rendering Markdown files as HTML. It supports CommonMark, GitHub Flavored Markdown (GFM), syntax highlighting, Mermaid diagrams, MathJax equations, custom CSS inlining, and YAML front matter handling.",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := getConverter()
@@ -94,6 +95,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&cssPath, "css", "", "Path to custom CSS file to inline into rendered HTML")
 	rootCmd.PersistentFlags().BoolVar(&noHighlight, "no-highlight", false, "Disable syntax highlighting in code blocks")
 	rootCmd.PersistentFlags().BoolVar(&noMermaid, "no-mermaid", false, "Disable Mermaid.js diagram rendering")
+	rootCmd.PersistentFlags().BoolVar(&noMathJax, "no-mathjax", false, "Disable MathJax mathematical expression rendering")
 	rootCmd.PersistentFlags().BoolVarP(&watch, "watch", "w", false, "Watch input for changes and automatically re-convert or auto-reload")
 	rootCmd.PersistentFlags().StringVar(&frontmatter, "frontmatter", "auto", "Front matter handling before conversion: auto (remove if valid YAML), remove (always remove if delimited by ---), include (keep intact)")
 	rootCmd.PersistentFlags().StringVar(&addTitle, "addtitle", "auto", "Title insertion mode: auto (add h1 if missing), on/true (always add h1), off/false (never add h1)")
@@ -119,6 +121,7 @@ func getConverter() *converter.Converter {
 		css = string(data)
 	}
 	c := converter.New(css, !noHighlight, !noMermaid)
+	c.MathJax = !noMathJax
 	c.Watch = watch
 	c.Frontmatter = frontmatter
 	c.AddTitle = addTitle

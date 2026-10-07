@@ -41,6 +41,9 @@ var defaultCSS string
 //go:embed mermaid.min.js
 var MermaidJS string
 
+//go:embed mathjax.min.js
+var MathJaxJS string
+
 var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
 <html>
 <head>
@@ -71,6 +74,24 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!DOCTYPE html>
         mermaid.initialize({ startOnLoad: true, theme: 'dark' });
         </script>
     {{- end }}
+    {{- if .MathJax }}
+        <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)']],
+                displayMath: [['\\[', '\\]']],
+                processEscapes: true
+            }
+        };
+        </script>
+        {{- if .EmbedAssets }}
+        <script>
+        {{ .MathJaxJS }}
+        </script>
+        {{- else }}
+        <script src="/_mdtool/mathjax.min.js"></script>
+        {{- end }}
+    {{- end }}
     {{- if .Watch }}
     <script>
     const evtSource = new EventSource("/events");
@@ -89,19 +110,18 @@ type Converter struct {
 	CSS         string
 	Highlight   bool
 	Mermaid     bool
+	MathJax     bool
 	Watch       bool
 	EmbedAssets bool
 	Frontmatter string
 	AddTitle    string
 	gm          goldmark.Markdown
+	gmHighlight bool
+	gmMermaid   bool
+	gmMathJax   bool
 }
 
-// New returns a new Converter with the specified options.
-func New(css string, highlight bool, mermaid bool) *Converter {
-	if css == "" {
-		css = defaultCSS
-	}
-
+func buildMarkdown(highlight, mermaid, mathjax bool) goldmark.Markdown {
 	extensions := []goldmark.Extender{
 		extension.GFM,
 	}
@@ -116,7 +136,11 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 		extensions = append(extensions, &mermaidExtender{})
 	}
 
-	gm := goldmark.New(
+	if mathjax {
+		extensions = append(extensions, &mathjaxExtender{})
+	}
+
+	return goldmark.New(
 		goldmark.WithExtensions(extensions...),
 		goldmark.WithParserOptions(
 			parser.WithAutoHeadingID(),
@@ -125,15 +149,36 @@ func New(css string, highlight bool, mermaid bool) *Converter {
 			gmhtml.WithUnsafe(),
 		),
 	)
+}
+
+func (c *Converter) markdown() goldmark.Markdown {
+	if c.gm != nil && c.gmHighlight == c.Highlight && c.gmMermaid == c.Mermaid && c.gmMathJax == c.MathJax {
+		return c.gm
+	}
+	return buildMarkdown(c.Highlight, c.Mermaid, c.MathJax)
+}
+
+// New returns a new Converter with the specified options.
+func New(css string, highlight bool, mermaid bool) *Converter {
+	if css == "" {
+		css = defaultCSS
+	}
+
+	mathjax := true
+	gm := buildMarkdown(highlight, mermaid, mathjax)
 
 	return &Converter{
 		CSS:         css,
 		Highlight:   highlight,
 		Mermaid:     mermaid,
+		MathJax:     mathjax,
 		EmbedAssets: true, // Default to true for batch mode
 		Frontmatter: FrontmatterAuto,
 		AddTitle:    AddTitleAuto,
 		gm:          gm,
+		gmHighlight: highlight,
+		gmMermaid:   mermaid,
+		gmMathJax:   mathjax,
 	}
 }
 
@@ -159,8 +204,9 @@ func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename strin
 		return err
 	}
 
+	gm := c.markdown()
 	reader := text.NewReader(md)
-	doc := c.gm.Parser().Parse(reader)
+	doc := gm.Parser().Parse(reader)
 
 	var firstHeadingLevel int
 	var firstH1Text string
@@ -221,7 +267,7 @@ func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename strin
 
 			escapedTitle := strings.NewReplacer("<", "&lt;", ">", "&gt;").Replace(titleString)
 			md = append([]byte("# "+escapedTitle+"\n\n"), md...)
-			doc = c.gm.Parser().Parse(text.NewReader(md))
+			doc = gm.Parser().Parse(text.NewReader(md))
 		}
 	default:
 		return fmt.Errorf("invalid addtitle mode: %q", c.AddTitle)
@@ -241,7 +287,7 @@ func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename strin
 	}
 
 	var content bytes.Buffer
-	if err := c.gm.Renderer().Render(&content, md, doc); err != nil {
+	if err := gm.Renderer().Render(&content, md, doc); err != nil {
 		return err
 	}
 
@@ -251,6 +297,8 @@ func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename strin
 		Content     template.HTML
 		Mermaid     bool
 		MermaidJS   template.JS
+		MathJax     bool
+		MathJaxJS   template.JS
 		EmbedAssets bool
 		Watch       bool
 	}{
@@ -259,6 +307,8 @@ func (c *Converter) ConvertWithFilename(r io.Reader, w io.Writer, filename strin
 		Content:     template.HTML(content.String()),
 		Mermaid:     c.Mermaid,
 		MermaidJS:   template.JS(MermaidJS),
+		MathJax:     c.MathJax,
+		MathJaxJS:   template.JS(MathJaxJS),
 		EmbedAssets: c.EmbedAssets,
 		Watch:       c.Watch,
 	}

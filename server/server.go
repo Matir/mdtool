@@ -100,6 +100,11 @@ func (s *Server) Serve() error {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		fmt.Fprint(w, converter.MermaidJS)
 	})
+	mux.HandleFunc("/_mdtool/mathjax.min.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		fmt.Fprint(w, converter.MathJaxJS)
+	})
 	mux.HandleFunc("/events", s.handleEvents)
 	mux.HandleFunc("/", s.handle)
 	fmt.Printf("Starting server on %s serving %s\n", s.Listen, s.Dir)
